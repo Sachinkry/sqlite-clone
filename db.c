@@ -43,8 +43,8 @@ int main()
     }
     printf("Buffer allocated successfully at %p\n", (void *)buffer);
 
-    fseek(file, 0, SEEK_SET);
-    size_t bytesRead = fread(buffer, 1, PAGE_SIZE, file);
+    fseek(file, 0, SEEK_SET);                             // Move to the beginning of the file
+    size_t bytesRead = fread(buffer, 1, PAGE_SIZE, file); // Read a page from the file
     if (bytesRead < PAGE_SIZE && !feof(file))
     {
         printf("Error: Partial read, only %zu bytes read\n", bytesRead);
@@ -58,9 +58,9 @@ int main()
     int num_rows;
     if (bytesRead == 0)
     {
-        memset(buffer, 0, PAGE_SIZE);
+        memset(buffer, 0, PAGE_SIZE); // Initialize buffer to zeros
         num_rows = 0;
-        memcpy(buffer, &num_rows, sizeof(int));
+        memcpy(buffer, &num_rows, sizeof(int)); // Store num_rows at the beginning of the buffer
         printf("Buffer initialized with zeros\n");
     }
     else
@@ -75,6 +75,7 @@ int main()
     {
         printf("db>");
         fflush(stdout);
+        // -------- Read part of REPL loop --------
         if (fgets(input, sizeof(input), stdin) == NULL)
         {
             break; // EOF or error
@@ -82,6 +83,7 @@ int main()
 
         input[strcspn(input, "\n")] = 0; // Remove newline character
 
+        // -------- Evaluate & Print part of REPL loop --------
         if (strncmp(input, "INSERT", 6) == 0)
         {
             if (num_rows >= MAX_ROWS)
@@ -94,37 +96,36 @@ int main()
             int id;
             char name[60];
 
-            if (sscanf(input, "INSERT %d %59s", &id, name) == 2)
+            if (sscanf(input, "INSERT %d %59s", &id, name) != 2)
             {
-                new_row.id = id;
-                strncpy(new_row.name, name, 59);
-                new_row.name[59] = '\0'; // Ensure null-termination
+                printf("Error: Invalid INSERT format. Use: INSERT <id> <name>\n");
+                continue;
+            }
 
-                // store row at correct offset: 4 bytes for num_rows + (num_rows * sizeof(struct Row))
-                size_t offset = sizeof(int) + (num_rows * sizeof(struct Row));
-                memcpy((char *)buffer + offset, &new_row, sizeof(struct Row));
-                printf("Inserted row at offset %zu: id=%d, name=%s\n", offset, new_row.id, new_row.name);
+            new_row.id = id;
+            strncpy(new_row.name, name, 59);
+            new_row.name[59] = '\0'; // Ensure null-termination
 
-                // increment num_rows and save it back to the buffer
-                num_rows++;
-                memcpy(buffer, &num_rows, sizeof(int));
+            // store row at correct offset: 4 bytes for num_rows + (num_rows * sizeof(struct Row))
+            size_t offset = sizeof(int) + (num_rows * sizeof(struct Row));
+            memcpy((char *)buffer + offset, &new_row, sizeof(struct Row));
+            printf("Inserted row at offset %zu: id=%d, name=%s\n", offset, new_row.id, new_row.name);
 
-                // Write the buffer back to the file
-                fseek(file, 0, SEEK_SET);
-                size_t bytesWritten = fwrite(buffer, 1, PAGE_SIZE, file);
-                if (bytesWritten != PAGE_SIZE)
-                {
-                    printf("Error: Wrote %zu bytes, expected %d bytes\n", bytesWritten, PAGE_SIZE);
-                }
-                else
-                {
-                    fflush(file); // ensure data is written to disk
-                    printf("Buffer written to file successfully\n");
-                }
+            // increment num_rows and save it back to the buffer
+            num_rows++;
+            memcpy(buffer, &num_rows, sizeof(int));
+
+            // Write the buffer back to the file
+            fseek(file, 0, SEEK_SET);
+            size_t bytesWritten = fwrite(buffer, 1, PAGE_SIZE, file);
+            if (bytesWritten != PAGE_SIZE)
+            {
+                printf("Error: Wrote %zu bytes, expected %d bytes\n", bytesWritten, PAGE_SIZE);
             }
             else
             {
-                printf("Error: Invalid INSERT format. Use: INSERT <id> <name>\n");
+                fflush(file); // ensure data is written to disk
+                printf("Buffer written to file successfully\n");
             }
         }
         else if (strncmp(input, "SELECT", 6) == 0)
@@ -140,8 +141,72 @@ int main()
                     struct Row row;
                     size_t offset = sizeof(int) + (i * sizeof(struct Row));
                     memcpy(&row, (char *)buffer + offset, sizeof(struct Row));
-                    printf("Row %d (offset %zu): id=%d, name=%s\n", i, offset, row.id, row.name);
+                    if (row.id != 0) // Check if the row is not deleted
+                    {
+                        // Display the row
+                        printf("Row %d (offset %zu): id=%d, name=%s\n", i, offset, row.id, row.name);
+                    }
+                    else
+                    {
+                        printf("Row %d (offset %zu): Deleted\n", i, offset);
+                    }
                 }
+            }
+        }
+        else if (strncmp(input, "DELETE", 6) == 0)
+        {
+            if (num_rows == 0)
+            {
+                printf("No rows to delete\n");
+                continue;
+            }
+
+            int id;
+            if (sscanf(input, "DELETE %d", &id) != 1)
+            {
+                printf("Error: Invalid DELETE format. Use: DELETE <id>\n");
+                continue;
+            }
+
+            // Find the row with the specified id
+            int found = 0;
+            for (int i = 0; i < num_rows; i++)
+            {
+                struct Row row;
+                size_t offset = sizeof(int) + (i * sizeof(struct Row));
+                memcpy(&row, (char *)buffer + offset, sizeof(struct Row));
+
+                if (row.id == id)
+                {
+                    found = 1;
+                    // set the row to zero
+                    memset((char *)buffer + offset, 0, sizeof(struct Row));
+                    printf("Deleted row with id=%d at offset %zu\n", id, offset);
+                    // num_rows--;
+                    break;
+                }
+            }
+            if (found)
+            {
+                // Update num_rows in the buffer
+                memcpy(buffer, &num_rows, sizeof(int));
+
+                // Write the updated buffer back to the file
+                fseek(file, 0, SEEK_SET);
+                size_t bytesWritten = fwrite(buffer, 1, PAGE_SIZE, file);
+                if (bytesWritten != PAGE_SIZE)
+                {
+                    printf("Error: Wrote %zu bytes, expected %d bytes\n", bytesWritten, PAGE_SIZE);
+                }
+                else
+                {
+                    fflush(file); // ensure data is written to disk
+                    printf("Buffer written to file successfully\n");
+                }
+            }
+            else
+            {
+                printf("Row with id=%d not found\n", id);
             }
         }
         else if (strncmp(input, "exit", 4) == 0)
@@ -161,7 +226,7 @@ int main()
     return 0;
 }
 
-// ?SUMMARY:
+/// SUMMARY:
 // 1. The code opens a database file named "mydb.db". If not found, it creates a new one.
 // 2. It allocates a buffer of size PAGE_SIZE (4096 bytes) to read data from the file.
 // 3. Simple REPL loop allows user to insert rows into the database or select and display them.
