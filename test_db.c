@@ -27,11 +27,26 @@ int select_rows(Database *db, struct Row *rows, int max_rows);
 int delete_row(Database *db, int id);
 void close_db(Database *db);
 
-// Test functions
+// Helper function to find a row by ID
+int select_by_id(Database *db, int id, struct Row *row)
+{
+    struct Row rows[MAX_ROWS];
+    int count = select_rows(db, rows, MAX_ROWS);
+    for (int i = 0; i < count; i++)
+    {
+        if (rows[i].id == id)
+        {
+            *row = rows[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Test insert, select, delete (previous tests)
 void test_insert_select_delete()
 {
-    // Start with a fresh database
-    remove("test.db"); // Delete old file
+    remove("test.db");
     Database db = init_db("test.db");
 
     // Test 1: Empty database
@@ -74,11 +89,57 @@ void test_insert_select_delete()
     assert(rows[0].id == 2 && "Row ID should be 2 after restart");
 
     close_db(&db);
-    printf("All tests passed!\n");
+}
+
+// Test select by ID
+void test_select_by_id()
+{
+    remove("test.db");
+    Database db = init_db("test.db");
+
+    // Test 1: Empty database
+    struct Row row;
+    int found = select_by_id(&db, 1, &row);
+    assert(found == 0 && "Should not find any row in empty database");
+
+    // Test 2: Insert rows and select by ID
+    insert_row(&db, 1, "Alice");
+    insert_row(&db, 2, "Bob");
+    insert_row(&db, 100, "Charlie");
+
+    found = select_by_id(&db, 1, &row);
+    assert(found == 1 && "Should find row with ID 1");
+    assert(row.id == 1 && "Row ID should be 1");
+    assert(strcmp(row.name, "Alice") == 0 && "Row name should be Alice");
+
+    found = select_by_id(&db, 100, &row);
+    assert(found == 1 && "Should find row with ID 100");
+    assert(row.id == 100 && "Row ID should be 100");
+    assert(strcmp(row.name, "Charlie") == 0 && "Row name should be Charlie");
+
+    // Test 3: Select non-existent ID
+    found = select_by_id(&db, 999, &row);
+    assert(found == 0 && "Should not find row with ID 999");
+
+    // Test 4: Select deleted row
+    delete_row(&db, 2);
+    found = select_by_id(&db, 2, &row);
+    assert(found == 0 && "Should not find deleted row with ID 2");
+
+    // Test 5: Persistence after restart
+    close_db(&db);
+    db = init_db("test.db");
+    found = select_by_id(&db, 1, &row);
+    assert(found == 1 && "Should find row with ID 1 after restart");
+    assert(row.id == 1 && "Row ID should be 1 after restart");
+
+    close_db(&db);
 }
 
 int main()
 {
     test_insert_select_delete();
+    test_select_by_id();
+    printf("All tests passed!\n");
     return 0;
 }

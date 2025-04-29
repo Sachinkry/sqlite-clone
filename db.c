@@ -4,7 +4,7 @@
 #include <assert.h>
 
 #define PAGE_SIZE 4096
-#define MAX_ROWS (PAGE_SIZE - sizeof(int) / sizeof(struct Row))
+#define MAX_ROWS ((PAGE_SIZE - sizeof(int)) / sizeof(struct Row))
 
 struct Row
 {
@@ -134,6 +134,22 @@ int select_rows(Database *db, struct Row *rows, int max_rows)
     return count;
 }
 
+// Select a row by ID (returns 1 if found, 0 if not)
+int select_by_id(Database *db, int id, struct Row *row)
+{
+    struct Row rows[MAX_ROWS];
+    int count = select_rows(db, rows, MAX_ROWS);
+    for (int i = 0; i < count; i++)
+    {
+        if (rows[i].id == id)
+        {
+            *row = rows[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // delete a row
 int delete_row(Database *db, int id)
 {
@@ -193,17 +209,44 @@ void run_repl(Database *db)
         }
         else if (strncmp(input, "SELECT", 6) == 0)
         {
-            struct Row rows[MAX_ROWS];
-            int count = select_rows(db, rows, MAX_ROWS);
-            if (count == 0)
+            int id;
+            char trailing[100];
+            if (sscanf(input, "SELECT %d %s", &id, trailing) == 2)
             {
-                printf("No rows to display\n");
+                printf("Error: Invalid SELECT format. Use: SELECT <id> or SELECT\n");
+                continue;
+            }
+            if (sscanf(input, "SELECT %d", &id) == 1)
+            {
+                if (id <= 0)
+                {
+                    printf("Error: ID must be positive\n");
+                    continue;
+                }
+                struct Row row;
+                if (select_by_id(db, id, &row))
+                {
+                    printf("Row: id=%d, name=%s\n", row.id, row.name);
+                }
+                else
+                {
+                    printf("Row with id=%d not found\n", id);
+                }
             }
             else
             {
-                for (int i = 0; i < count; i++)
+                struct Row rows[MAX_ROWS];
+                int count = select_rows(db, rows, MAX_ROWS);
+                if (count == 0)
                 {
-                    printf("Row %d: id=%d, name=%s\n", i, rows[i].id, rows[i].name);
+                    printf("No rows to display\n");
+                }
+                else
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        printf("Row %d: id=%d, name=%s\n", i, rows[i].id, rows[i].name);
+                    }
                 }
             }
         }
