@@ -230,7 +230,8 @@ int insert_row(Database *db, int id, const char *name)
     printf("Inserted row at offset %zu in page %d: id=%d, name=%s\n", offset, current_page, new_row.id, new_row.name);
 
     (*page_num_rows)++;
-    memcpy(db->pages[current_page], page_num_rows, sizeof(int));
+    int updated_num_rows = *page_num_rows;
+    memcpy(db->pages[current_page], &updated_num_rows, sizeof(int));
     write_buffer(db);
     return 1;
 }
@@ -272,7 +273,7 @@ int update_row(Database *db, int id, const char *name)
     return 0;
 }
 
-// delete a row
+// Delete a row
 int delete_row(Database *db, int id)
 {
     int found = 0;
@@ -287,7 +288,31 @@ int delete_row(Database *db, int id)
             if (row.id == id)
             {
                 found = 1;
-                memset((char *)db->pages[page] + offset, 0, sizeof(struct Row));
+                // Shift all subsequent rows left to fill the gap
+                for (int j = i; j < *page_num_rows - 1; j++)
+                {
+                    size_t current_offset = sizeof(int) + (j * sizeof(struct Row));
+                    size_t next_offset = sizeof(int) + ((j + 1) * sizeof(struct Row));
+                    memcpy((char *)db->pages[page] + current_offset,
+                           (char *)db->pages[page] + next_offset,
+                           sizeof(struct Row));
+                }
+                // Clear the last slot after shifting
+                size_t last_offset = sizeof(int) + ((*page_num_rows - 1) * sizeof(struct Row));
+                memset((char *)db->pages[page] + last_offset, 0, sizeof(struct Row));
+                (*page_num_rows)--;
+
+                // If page is now empty, remove it
+                if (*page_num_rows == 0)
+                {
+                    free(db->pages[page]);
+                    for (int k = page; k < db->num_pages - 1; k++)
+                    {
+                        db->pages[k] = db->pages[k + 1];
+                    }
+                    db->pages[db->num_pages - 1] = NULL;
+                    db->num_pages--;
+                }
                 break;
             }
         }
@@ -459,3 +484,4 @@ int main()
 //             'SELECT' would display all inserted rows.
 //             'DELETE 1' would delete the row with id=1.
 //             'exit' exits the program.
+// offset: 4, 68, 132, 196, 260, 324, 388, 452, 516, 580

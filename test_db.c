@@ -272,6 +272,65 @@ void test_update()
     remove("test.db"); // Ensure clean state for next suite
 }
 
+// Test compaction functionality
+void test_compaction()
+{
+    remove("test.db");
+    Database db = init_db("test.db");
+
+    // Test 27: Insert multiple rows and delete middle one
+    int inserted = insert_row(&db, 1, "Alice");
+    inserted &= insert_row(&db, 2, "Bob");
+    inserted &= insert_row(&db, 3, "Charlie");
+    struct Row rows[MAX_ROWS * MAX_PAGES];
+    int count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(27, "Should insert 3 rows", inserted == 1 && count == 3 && rows[0].id == 1 && rows[1].id == 2 && rows[2].id == 3);
+
+    int deleted = delete_row(&db, 2);
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(28, "Should compact rows after deleting ID 2", deleted == 1 && count == 2 && rows[0].id == 1 && rows[1].id == 3 && strcmp(rows[0].name, "Alice") == 0 && strcmp(rows[1].name, "Charlie") == 0);
+
+    // Test 29: Fill a page, delete all, verify page removal
+    for (int i = 4; i <= MAX_ROWS + 3; i++)
+    {
+        char name[60];
+        snprintf(name, 60, "Name%d", i);
+        inserted = insert_row(&db, i, name);
+        if (!inserted)
+        {
+            log_test(29, "Should insert up to 63 rows total", 0);
+            close_db(&db);
+            return;
+        }
+    }
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    printf("Debug: After inserting IDs 4 to 66, total rows = %d, num_pages = %d\n", count, db.num_pages);
+    int page_0_rows = *(int *)db.pages[0];
+    log_test(29, "Should have 65 rows total, 63 in page 0", count == 65 && page_0_rows == MAX_ROWS);
+
+    for (int i = 4; i <= MAX_ROWS + 3; i++)
+    {
+        deleted = delete_row(&db, i);
+        if (!deleted)
+        {
+            log_test(29, "Should delete all rows", 0);
+            close_db(&db);
+            return;
+        }
+    }
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    printf("Debug: After deleting IDs 4 to 66, total rows = %d, num_pages = %d\n", count, db.num_pages);
+    log_test(29, "Should remove empty page and retain 2 rows", count == 2 && db.num_pages == 1);
+
+    // Test 30: Insert after compaction
+    inserted = insert_row(&db, 4, "David");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(30, "Should insert new row after compaction", inserted == 1 && count == 3 && rows[2].id == 4 && strcmp(rows[2].name, "David") == 0);
+
+    close_db(&db);
+    remove("test.db"); // Ensure clean state for next suite
+}
+
 int main()
 {
     total_tests = 0;
@@ -281,6 +340,7 @@ int main()
     test_unique_id_enforcement();
     test_invalid_inputs();
     test_update();
+    test_compaction();
     printf("%s%d/%d tests passed!%s\n", PURPLE, passed_tests, total_tests, RESET);
     return 0;
 }
