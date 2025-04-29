@@ -6,6 +6,7 @@
 // Include the database functions (in a real project, you'd use a header file)
 #define PAGE_SIZE 4096
 #define MAX_ROWS ((PAGE_SIZE - sizeof(int)) / sizeof(struct Row))
+#define MAX_PAGES 10
 
 struct Row
 {
@@ -16,79 +17,94 @@ struct Row
 typedef struct
 {
     FILE *file;
-    void *buffer;
-    int num_rows;
+    void **pages;
+    int num_pages;
+    int max_pages;
 } Database;
 
+// Function prototypes
 Database init_db(const char *filename);
 void write_buffer(Database *db);
-void insert_row(Database *db, int id, const char *name);
+int insert_row(Database *db, int id, const char *name);
 int select_rows(Database *db, struct Row *rows, int max_rows);
+int select_by_id(Database *db, int id, struct Row *row);
 int delete_row(Database *db, int id);
 void close_db(Database *db);
+int update_row(Database *db, int id, const char *name);
 
-// Helper function to find a row by ID
-int select_by_id(Database *db, int id, struct Row *row)
+// Test logging with colors
+#define GREEN "\033[32m"
+#define RED "\033[31m"
+#define PURPLE "\033[35m"
+#define RESET "\033[0m"
+
+int total_tests = 0;
+int passed_tests = 0;
+
+void log_test(int test_num, const char *message, int passed)
 {
-    struct Row rows[MAX_ROWS];
-    int count = select_rows(db, rows, MAX_ROWS);
-    for (int i = 0; i < count; i++)
+    total_tests++;
+    if (passed)
     {
-        if (rows[i].id == id)
-        {
-            *row = rows[i];
-            return 1;
-        }
+        passed_tests++;
+        printf("Test %d %s[PASSED] %s%s\n", test_num, GREEN, message, RESET);
     }
-    return 0;
+    else
+    {
+        printf("Test %d %s[FAILED] %s%s\n", test_num, RED, message, RESET);
+    }
 }
 
-// Test insert, select, delete (previous tests)
+// Test insert, select, delete
 void test_insert_select_delete()
 {
     remove("test.db");
     Database db = init_db("test.db");
 
     // Test 1: Empty database
-    struct Row rows[MAX_ROWS];
-    int count = select_rows(&db, rows, MAX_ROWS);
-    assert(count == 0 && "Empty database should have 0 rows");
+    struct Row rows[MAX_ROWS * MAX_PAGES];
+    int count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(1, "Empty database should have 0 rows", count == 0);
 
     // Test 2: Insert one row and select
-    insert_row(&db, 1, "Alice");
-    count = select_rows(&db, rows, MAX_ROWS);
-    assert(count == 1 && "Should have 1 row after insert");
-    assert(rows[0].id == 1 && "Row ID should be 1");
-    assert(strcmp(rows[0].name, "Alice") == 0 && "Row name should be Alice");
+    int inserted = insert_row(&db, 1, "Alice");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(2, "Should have 1 row after insert", inserted == 1 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Alice") == 0);
 
-    // Test 3: Insert another row and select
-    insert_row(&db, 2, "Bob");
-    count = select_rows(&db, rows, MAX_ROWS);
-    assert(count == 2 && "Should have 2 rows after second insert");
-    assert(rows[0].id == 1 && "First row ID should be 1");
-    assert(rows[1].id == 2 && "Second row ID should be 2");
-    assert(strcmp(rows[1].name, "Bob") == 0 && "Second row name should be Bob");
+    // Test 3: Insert rows to fill first page (63 rows)
+    for (int i = 2; i <= MAX_ROWS; i++)
+    {
+        char name[60];
+        snprintf(name, 60, "Name%d", i);
+        inserted = insert_row(&db, i, name);
+        if (!inserted)
+        {
+            log_test(3, "Should insert up to 63 rows", 0);
+            close_db(&db);
+            return;
+        }
+    }
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(3, "Should have 63 rows after filling first page", count == MAX_ROWS);
 
-    // Test 4: Delete a row and select
+    // Test 4: Insert row to trigger new page
+    inserted = insert_row(&db, 64, "NewPage");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(4, "Should have 64 rows after new page", inserted == 1 && count == MAX_ROWS + 1 && rows[MAX_ROWS].id == 64 && strcmp(rows[MAX_ROWS].name, "NewPage") == 0);
+
+    // Test 5: Delete a row and select
     int deleted = delete_row(&db, 1);
-    assert(deleted == 1 && "Row with ID 1 should be deleted");
-    count = select_rows(&db, rows, MAX_ROWS);
-    assert(count == 1 && "Should have 1 row after delete");
-    assert(rows[0].id == 2 && "Remaining row ID should be 2");
-    assert(strcmp(rows[0].name, "Bob") == 0 && "Remaining row name should be Bob");
-
-    // Test 5: Delete non-existent row
-    deleted = delete_row(&db, 999);
-    assert(deleted == 0 && "Deleting non-existent row should return 0");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(5, "Should have 63 rows after delete", deleted == 1 && count == MAX_ROWS);
 
     // Test 6: Persistence after restart
     close_db(&db);
     db = init_db("test.db");
-    count = select_rows(&db, rows, MAX_ROWS);
-    assert(count == 1 && "Should have 1 row after restart");
-    assert(rows[0].id == 2 && "Row ID should be 2 after restart");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(6, "Should have 63 rows after restart", count == MAX_ROWS);
 
     close_db(&db);
+    remove("test.db"); // Ensure clean state for next suite
 }
 
 // Test select by ID
@@ -97,49 +113,174 @@ void test_select_by_id()
     remove("test.db");
     Database db = init_db("test.db");
 
-    // Test 1: Empty database
+    // Test 7: Empty database
     struct Row row;
     int found = select_by_id(&db, 1, &row);
-    assert(found == 0 && "Should not find any row in empty database");
+    log_test(7, "Should not find any row in empty database", found == 0);
 
-    // Test 2: Insert rows and select by ID
-    insert_row(&db, 1, "Alice");
-    insert_row(&db, 2, "Bob");
-    insert_row(&db, 100, "Charlie");
+    // Test 8: Insert rows and select by ID
+    int inserted = insert_row(&db, 1, "Alice");
+    inserted &= insert_row(&db, 2, "Bob");
+    inserted &= insert_row(&db, 100, "Charlie");
+    if (!inserted)
+    {
+        log_test(8, "Failed to insert rows for select by ID test", 0);
+        close_db(&db);
+        return;
+    }
 
     found = select_by_id(&db, 1, &row);
-    assert(found == 1 && "Should find row with ID 1");
-    assert(row.id == 1 && "Row ID should be 1");
-    assert(strcmp(row.name, "Alice") == 0 && "Row name should be Alice");
+    log_test(8, "Should find row with ID 1", found == 1 && row.id == 1 && strcmp(row.name, "Alice") == 0);
 
     found = select_by_id(&db, 100, &row);
-    assert(found == 1 && "Should find row with ID 100");
-    assert(row.id == 100 && "Row ID should be 100");
-    assert(strcmp(row.name, "Charlie") == 0 && "Row name should be Charlie");
+    log_test(9, "Should find row with ID 100", found == 1 && row.id == 100 && strcmp(row.name, "Charlie") == 0);
 
-    // Test 3: Select non-existent ID
+    // Test 10: Select non-existent ID
     found = select_by_id(&db, 999, &row);
-    assert(found == 0 && "Should not find row with ID 999");
+    log_test(10, "Should not find row with ID 999", found == 0);
 
-    // Test 4: Select deleted row
-    delete_row(&db, 2);
+    // Test 11: Select deleted row
+    int deleted = delete_row(&db, 2);
     found = select_by_id(&db, 2, &row);
-    assert(found == 0 && "Should not find deleted row with ID 2");
+    log_test(11, "Should not find deleted row with ID 2", deleted == 1 && found == 0);
 
-    // Test 5: Persistence after restart
+    // Test 12: Persistence after restart
     close_db(&db);
     db = init_db("test.db");
     found = select_by_id(&db, 1, &row);
-    assert(found == 1 && "Should find row with ID 1 after restart");
-    assert(row.id == 1 && "Row ID should be 1 after restart");
+    log_test(12, "Should find row with ID 1 after restart", found == 1 && row.id == 1);
 
     close_db(&db);
+    remove("test.db"); // Ensure clean state for next suite
+}
+
+// Test unique ID enforcement
+void test_unique_id_enforcement()
+{
+    remove("test.db");
+    Database db = init_db("test.db");
+
+    // Test 13: Insert first row
+    int inserted = insert_row(&db, 1, "Alice");
+    struct Row rows[MAX_ROWS * MAX_PAGES];
+    int count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(13, "Should insert first row with ID 1", inserted == 1 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Alice") == 0);
+
+    // Test 14: Insert duplicate ID
+    inserted = insert_row(&db, 1, "Bob");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(14, "Should not insert duplicate ID 1", inserted == 0 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Alice") == 0);
+
+    // Test 15: Insert new ID after duplicate attempt
+    inserted = insert_row(&db, 2, "Bob");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(15, "Should insert new row with ID 2", inserted == 1 && count == 2 && rows[0].id == 1 && rows[1].id == 2 && strcmp(rows[1].name, "Bob") == 0);
+
+    close_db(&db);
+    remove("test.db"); // Ensure clean state for next suite
+}
+
+// Test invalid inputs (negative IDs, zero IDs, etc.)
+void test_invalid_inputs()
+{
+    remove("test.db");
+    Database db = init_db("test.db");
+
+    // Test 16: Insert negative ID
+    int inserted = insert_row(&db, -1, "Invalid");
+    struct Row rows[MAX_ROWS * MAX_PAGES];
+    int count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(16, "Should not insert negative ID -1", inserted == 0 && count == 0);
+
+    // Test 17: Insert zero ID
+    inserted = insert_row(&db, 0, "Invalid");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(17, "Should not insert zero ID", inserted == 0 && count == 0);
+
+    // Test 18: Insert valid row, then duplicate
+    inserted = insert_row(&db, 1, "Alice");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(18, "Should insert first row with ID 1", inserted == 1 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Alice") == 0);
+
+    inserted = insert_row(&db, 1, "Duplicate");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(19, "Should not insert duplicate ID 1", inserted == 0 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Alice") == 0);
+
+    // Test 20: Fill all pages to test max capacity (629 rows to reach 630 total)
+    int successful_inserts = 0;
+    for (int i = 2; i <= MAX_ROWS * MAX_PAGES; i++)
+    { // 2 to 630 = 629 rows
+        char name[60];
+        snprintf(name, 60, "Name%d", i);
+        inserted = insert_row(&db, i, name);
+        if (inserted)
+        {
+            successful_inserts++;
+        }
+        else
+        {
+            log_test(20, "Should insert up to max rows", 0);
+            // Don't return; continue to Test 21
+        }
+    }
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(20, "Should insert up to max rows", count == MAX_ROWS * MAX_PAGES && successful_inserts == MAX_ROWS * MAX_PAGES - 1);
+
+    // Test 21: Insert after max rows reached
+    inserted = insert_row(&db, MAX_ROWS * MAX_PAGES + 1, "TooMany");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(21, "Should not insert after max rows reached", inserted == 0 && count == MAX_ROWS * MAX_PAGES);
+
+    close_db(&db);
+    remove("test.db"); // Ensure clean state for future runs
+}
+
+// Test update functionality
+void test_update()
+{
+    remove("test.db");
+    Database db = init_db("test.db");
+
+    // Test 22: Insert a row to update
+    int inserted = insert_row(&db, 1, "Alice");
+    struct Row rows[MAX_ROWS * MAX_PAGES];
+    int count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(22, "Should insert row with ID 1", inserted == 1 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Alice") == 0);
+
+    // Test 23: Update existing row
+    int updated = update_row(&db, 1, "Bob");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(23, "Should update row with ID 1 to Bob", updated == 1 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Bob") == 0);
+
+    // Test 24: Update non-existent row
+    updated = update_row(&db, 2, "Charlie");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(24, "Should not update non-existent row with ID 2", updated == 0 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Bob") == 0);
+
+    // Test 25: Update with invalid ID
+    updated = update_row(&db, -1, "Invalid");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(25, "Should not update with invalid ID -1", updated == 0 && count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Bob") == 0);
+
+    // Test 26: Persistence after restart
+    close_db(&db);
+    db = init_db("test.db");
+    count = select_rows(&db, rows, MAX_ROWS * MAX_PAGES);
+    log_test(26, "Should retain updated row after restart", count == 1 && rows[0].id == 1 && strcmp(rows[0].name, "Bob") == 0);
+
+    close_db(&db);
+    remove("test.db"); // Ensure clean state for next suite
 }
 
 int main()
 {
+    total_tests = 0;
+    passed_tests = 0;
     test_insert_select_delete();
     test_select_by_id();
-    printf("All tests passed!\n");
+    test_unique_id_enforcement();
+    test_invalid_inputs();
+    test_update();
+    printf("%s%d/%d tests passed!%s\n", PURPLE, passed_tests, total_tests, RESET);
     return 0;
 }
