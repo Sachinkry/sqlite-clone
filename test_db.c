@@ -20,6 +20,8 @@ typedef struct
     void **pages;
     int num_pages;
     int max_pages;
+    off_t root_offset;
+    int page_dirty[MAX_PAGES];
 } Database;
 
 // Function prototypes

@@ -1,0 +1,9 @@
+*.db
+
+
+test_db smalldb
+
+
+*.o *.tmp
+lol.c
+.DS_Store
